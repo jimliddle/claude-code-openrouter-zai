@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="${CLAUDE_ZAI_MODEL:-z-ai/glm-5.2}"
+BASE_URL="${CLAUDE_ZAI_BASE_URL:-https://openrouter.ai/api}"
+ENV_FILE="${CLAUDE_ZAI_ENV_FILE:-${HOME}/.claude-zai.env}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+resolve_model() {
+  case "$1" in
+    glm|glm-5.2|glm5.2|zai|z-ai|default)
+      printf '%s\n' "z-ai/glm-5.2"
+      ;;
+    glm-5|glm5)
+      printf '%s\n' "z-ai/glm-5"
+      ;;
+    glm-5-turbo|glm5-turbo)
+      printf '%s\n' "z-ai/glm-5-turbo"
+      ;;
+    glm-4.7|glm4.7)
+      printf '%s\n' "z-ai/glm-4.7"
+      ;;
+    glm-4.6|glm4.6)
+      printf '%s\n' "z-ai/glm-4.6"
+      ;;
+    sonnet|claude-sonnet)
+      printf '%s\n' "anthropic/claude-sonnet-4.6"
+      ;;
+    opus|claude-opus)
+      printf '%s\n' "anthropic/claude-opus-4.8"
+      ;;
+    haiku|claude-haiku)
+      printf '%s\n' "anthropic/claude-haiku-4.5"
+      ;;
+    gpt|gpt-5|gpt5)
+      printf '%s\n' "openai/gpt-5.5"
+      ;;
+    gpt-codex|codex)
+      printf '%s\n' "openai/gpt-5.3-codex"
+      ;;
+    qwen-coder|qwen3-coder)
+      printf '%s\n' "qwen/qwen3-coder"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+print_help() {
+  cat <<'EOF'
+Usage:
+  claude-zai [--model MODEL_OR_ALIAS] [claude args...]
+  claude-zai --list-models
+  claude-zai --search-models TERM
+
+Default model:
+  z-ai/glm-5.2
+
+Model aliases:
+  glm, glm-5.2, default  -> z-ai/glm-5.2
+  glm-5                  -> z-ai/glm-5
+  glm-5-turbo            -> z-ai/glm-5-turbo
+  glm-4.7                -> z-ai/glm-4.7
+  glm-4.6                -> z-ai/glm-4.6
+  sonnet                 -> anthropic/claude-sonnet-4.6
+  opus                   -> anthropic/claude-opus-4.8
+  haiku                  -> anthropic/claude-haiku-4.5
+  gpt                    -> openai/gpt-5.5
+  gpt-codex              -> openai/gpt-5.3-codex
+  qwen-coder             -> qwen/qwen3-coder
+
+Exact OpenRouter model ids are also accepted:
+  claude-zai --model z-ai/glm-5.2
+  claude-zai --model qwen/qwen3-coder
+
+Environment:
+  OPENROUTER_API_KEY is required.
+  CLAUDE_ZAI_MODEL can set the default model.
+  CLAUDE_ZAI_ENV_FILE can override ~/.claude-zai.env.
+  CLAUDE_ZAI_BASE_URL can override https://openrouter.ai/api.
+EOF
+}
+
+models_url() {
+  printf '%s/v1/models\n' "${BASE_URL%/}"
+}
+
+list_models() {
+  local filter="${1:-}"
+  local url
+  url="$(models_url)"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "error: curl is required to list OpenRouter models" >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "error: node is required to format OpenRouter model listings" >&2
+    exit 1
+  fi
+
+  raw_json="$(curl -fsSL "${url}")"
+  printf '%s' "${raw_json}" | node -e '
+const fs = require("fs");
+const filter = (process.argv[1] || "").toLowerCase();
+const raw = fs.readFileSync(0, "utf8");
+const payload = JSON.parse(raw);
+const rows = (payload.data || [])
+  .filter((model) => {
+    if (!filter) return true;
+    const haystack = [
+      model.id,
+      model.name,
+      model.description,
+      model.architecture && model.architecture.modality,
+      model.architecture && model.architecture.tokenizer
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(filter);
+  })
+  .sort((a, b) => a.id.localeCompare(b.id));
+
+for (const model of rows) {
+  const context = model.context_length ? `${model.context_length} ctx` : "ctx ?";
+  const input = model.pricing && model.pricing.prompt ? model.pricing.prompt : "?";
+  const output = model.pricing && model.pricing.completion ? model.pricing.completion : "?";
+  const name = model.name || "";
+  console.log(`${model.id}\t${context}\tin ${input}\tout ${output}\t${name}`);
+}
+' "${filter}"
+}
+
+claude_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model|--openrouter-model)
+      if [[ $# -lt 2 ]]; then
+        echo "error: $1 requires a model alias or OpenRouter model id" >&2
+        exit 2
+      fi
+      MODEL="$2"
+      shift 2
+      ;;
+    --base-url|--openrouter-url)
+      if [[ $# -lt 2 ]]; then
+        echo "error: $1 requires a base URL" >&2
+        exit 2
+      fi
+      BASE_URL="$2"
+      shift 2
+      ;;
+    --env-file)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --env-file requires a path" >&2
+        exit 2
+      fi
+      ENV_FILE="$2"
+      shift 2
+      ;;
+    --list-models)
+      list_models
+      exit 0
+      ;;
+    --search-models)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --search-models requires a search term" >&2
+        exit 2
+      fi
+      list_models "$2"
+      exit 0
+      ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    --)
+      shift
+      claude_args+=("$@")
+      break
+      ;;
+    *)
+      claude_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+BASE_URL="${OPENROUTER_BASE_URL:-${BASE_URL}}"
+BASE_URL="${BASE_URL%/}"
+MODEL="$(resolve_model "${MODEL}")"
+
+if [[ -n "${ENV_FILE}" && -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  set +a
+fi
+
+if [[ -z "${OPENROUTER_API_KEY:-}" && -z "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+  cat >&2 <<EOF
+error: OPENROUTER_API_KEY is not set
+
+Create a private env file:
+  cp ${REPO_ROOT}/examples/env.example ${ENV_FILE}
+
+Then edit it and add:
+  export OPENROUTER_API_KEY="sk-or-..."
+EOF
+  exit 1
+fi
+
+export ANTHROPIC_BASE_URL="${BASE_URL}"
+unset ANTHROPIC_API_KEY
+export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${OPENROUTER_API_KEY}}"
+export ANTHROPIC_MODEL="${MODEL}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="${MODEL}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="${MODEL}"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="${MODEL}"
+export CLAUDE_CODE_SUBAGENT_MODEL="${MODEL}"
+export CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP="${CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP:-1}"
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY:-1}"
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-3000000}"
+
+if [[ -n "${OPENROUTER_SITE_URL:-}" || -n "${OPENROUTER_APP_NAME:-}" ]]; then
+  custom_headers=()
+  if [[ -n "${OPENROUTER_SITE_URL:-}" ]]; then
+    custom_headers+=("HTTP-Referer: ${OPENROUTER_SITE_URL}")
+  fi
+  if [[ -n "${OPENROUTER_APP_NAME:-}" ]]; then
+    custom_headers+=("X-Title: ${OPENROUTER_APP_NAME}")
+  fi
+  export ANTHROPIC_CUSTOM_HEADERS="$(IFS=','; printf '%s' "${custom_headers[*]}")"
+fi
+
+args=(--model "${MODEL}")
+if [[ ${#claude_args[@]} -gt 0 ]]; then
+  exec claude "${args[@]}" "${claude_args[@]}"
+fi
+
+exec claude "${args[@]}"
