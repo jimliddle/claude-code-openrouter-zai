@@ -6,7 +6,10 @@ This repository provides a small launcher for running Claude Code through OpenRo
 z-ai/glm-5.2
 ```
 
-It is intentionally narrow, no local model setup, no MCP servers, no private plugins, and no machine-specific configuration.
+It is intentionally narrow, no local model setup, no MCP servers, no private plugins, and no machine-specific configuration. These can all be added by the end user.
+
+<img width="374" height="427" alt="Screenshot" src="https://github.com/user-attachments/assets/c0a6a949-0788-4d5a-8a6b-6362ec368078" />
+
 
 ## Requirements
 
